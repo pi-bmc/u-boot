@@ -740,6 +740,7 @@ int usb_scan_device(struct udevice *parent, int port,
 	struct usb_bus_priv *priv;
 	struct usb_device *parent_udev;
 	int ret;
+	unsigned int ifnum;
 	ALLOC_CACHE_ALIGN_BUFFER(struct usb_device, udev, 1);
 	struct usb_interface_descriptor *iface = &udev->config.if_desc[0].desc;
 
@@ -814,6 +815,60 @@ int usb_scan_device(struct udevice *parent, int port,
 		return ret;
 	}
 	*devp = dev;
+
+	/*
+	 * Composite USB devices (bDeviceClass=0xEF/IAD) expose multiple
+	 * functions as separate interfaces.  The primary binding above only
+	 * considers if_desc[0], so drivers for higher-numbered interfaces
+	 * (e.g. mass storage behind RNDIS on interface 0) are never found.
+	 *
+	 * Iterate the remaining interfaces and bind a specific driver for
+	 * each one.  Generic-fallback bindings are skipped — we only want
+	 * interfaces that have a real driver (storage, HID, …).
+	 * No extra USB address is consumed; all siblings share devnum.
+	 *
+	 * udev is still valid on the stack here; usb_child_pre_probe() copies
+	 * it into each child's per_child_auto allocation, so each sibling gets
+	 * its own independent copy of the full device descriptor.
+	 */
+	for (ifnum = 1; ifnum < udev->config.no_of_if; ifnum++) {
+		struct usb_interface_descriptor *extra_iface =
+			&udev->config.if_desc[ifnum].desc;
+		struct udevice *extra_dev;
+		struct usb_dev_plat *extra_plat;
+
+		/* Reuse an existing (inactive) sibling if one was bound earlier */
+		ret = usb_find_child(parent, &udev->descriptor,
+				     extra_iface, &extra_dev);
+		if (ret == -ENOENT) {
+			ret = usb_find_and_bind_driver(
+					parent, &udev->descriptor, extra_iface,
+					dev_seq(udev->controller_dev),
+					udev->devnum, port, &extra_dev);
+			if (ret)
+				continue;
+
+			/* Discard generic placeholder — no specific driver */
+			if (!strcmp(extra_dev->driver->name,
+				    "usb_dev_generic_drv")) {
+				device_unbind(extra_dev);
+				continue;
+			}
+		} else if (ret) {
+			continue;
+		}
+
+		extra_plat = dev_get_parent_plat(extra_dev);
+		extra_plat->devnum = udev->devnum;
+		extra_plat->udev = udev;
+		/* devnum already assigned above — do not increment next_addr */
+
+		if (device_probe(extra_dev)) {
+			debug("%s: composite iface %u probe failed\n",
+			      __func__, ifnum);
+			device_unbind(extra_dev);
+		}
+	}
 
 	return 0;
 }
