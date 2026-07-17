@@ -41,6 +41,7 @@ obj-$(CONFIG_GZIP_COMPRESSED) += gzip.o
 # With QEMU the SMBIOS tables come from there, not from U-Boot
 ifndef CONFIG_QFW_SMBIOS
 obj-$(CONFIG_GENERATE_SMBIOS_TABLE) += smbios.o
+obj-$(CONFIG_SMBIOS_I2C_STORE) += smbios_i2c.o
 endif
 
 obj-$(CONFIG_SMBIOS_PARSER) += smbios-parser.o

@@ -8,6 +8,7 @@
 #include <charset.h>
 #include <command.h>
 #include <dm/device.h>
+#include <dm/uclass.h>
 #include <efi_device_path.h>
 #include <efi_dt_fixup.h>
 #include <efi_load_initrd.h>
@@ -804,8 +805,9 @@ static int efi_boot_add_uri(int argc, char *const argv[], u16 *var_name16,
 	if (!label)
 		return CMD_RET_FAILURE;
 
-	if (!wget_validate_uri(argv[3])) {
-		printf("ERROR: invalid URI\n");
+	if (!wget_validate_uri(argv[3]) &&
+	    strncmp(argv[3], "tftp://", strlen("tftp://"))) {
+		printf("ERROR: invalid URI (expected http:// or tftp://)\n");
 		return CMD_RET_FAILURE;
 	}
 
@@ -830,6 +832,76 @@ static int efi_boot_add_uri(int argc, char *const argv[], u16 *var_name16,
 
 	return CMD_RET_SUCCESS;
 }
+
+#if IS_ENABLED(CONFIG_EFI_NET_PXE_BOOT)
+/**
+ * efi_boot_add_net() - set a network (PXE) load option
+ *
+ * Build a Boot#### whose device path is the MAC() path of an Ethernet
+ * interface. At boot the EFI boot manager finds that NIC's Load File protocol
+ * (installed by efi_net.c) and PXE-boots it: DHCP as a UEFI PXE client, then
+ * TFTP the server-provided bootfile.
+ *
+ *     efidebug boot add -n <bootid> <label> <eth-devnum>
+ *
+ * @argc:		Number of arguments
+ * @argv:		Argument array
+ * @var_name16:		variable name buffer
+ * @var_name16_size:	variable name buffer size
+ * @lo:			pointer to the load option
+ * @file_path:		buffer to set the generated device path pointer
+ * @fp_size:		file_path size
+ * Return:		CMD_RET_SUCCESS on success, CMD_RET_USAGE/FAILURE otherwise
+ */
+static int efi_boot_add_net(int argc, char *const argv[], u16 *var_name16,
+			    size_t var_name16_size, struct efi_load_option *lo,
+			    struct efi_device_path **file_path,
+			    efi_uintn_t *fp_size)
+{
+	struct efi_device_path *dp;
+	struct udevice *dev;
+	char *endp;
+	u16 *label;
+	int id, devnum;
+
+	if (argc < 4 || lo->label)
+		return CMD_RET_USAGE;
+
+	id = (int)hextoul(argv[1], &endp);
+	if (*endp != '\0' || id > 0xffff)
+		return CMD_RET_USAGE;
+
+	label = efi_convert_string(argv[2]);
+	if (!label)
+		return CMD_RET_FAILURE;
+
+	devnum = (int)dectoul(argv[3], &endp);
+	if (*endp != '\0') {
+		free(label);
+		return CMD_RET_USAGE;
+	}
+	if (uclass_get_device(UCLASS_ETH, devnum, &dev)) {
+		printf("ERROR: ethernet device %d not found\n", devnum);
+		free(label);
+		return CMD_RET_FAILURE;
+	}
+
+	dp = efi_dp_from_eth(dev);
+	if (!dp) {
+		free(label);
+		return CMD_RET_FAILURE;
+	}
+
+	efi_create_indexed_name(var_name16, var_name16_size, "Boot", id);
+	lo->label = label;
+
+	*file_path = dp;
+	/* efi_dp_from_eth() returns a terminated device path */
+	*fp_size += efi_dp_size(dp) + sizeof(EFI_DP_END);
+
+	return CMD_RET_SUCCESS;
+}
+#endif /* CONFIG_EFI_NET_PXE_BOOT */
 
 /**
  * do_efi_boot_add() - set UEFI load option
@@ -960,6 +1032,17 @@ static int do_efi_boot_add(struct cmd_tbl *cmdtp, int flag,
 			argc -= 1;
 			argv += 1;
 			break;
+#if IS_ENABLED(CONFIG_EFI_NET_PXE_BOOT)
+		case 'n':
+			r = efi_boot_add_net(argc, argv, var_name16,
+					     sizeof(var_name16), &lo,
+					     &file_path, &fp_size);
+			if (r != CMD_RET_SUCCESS)
+				goto out;
+			argc -= 3;
+			argv += 3;
+			break;
+#endif
 		case 'u':
 			if (IS_ENABLED(CONFIG_EFI_HTTP_BOOT)) {
 				r = efi_boot_add_uri(argc, argv, var_name16,
@@ -1647,7 +1730,10 @@ U_BOOT_LONGHELP(efidebug,
 	"  -i|-I <interface> <devnum>[:<part>] <initrd file path>\n"
 	"  (-b, -d, -i for short form device path)\n"
 #if (IS_ENABLED(CONFIG_EFI_HTTP_BOOT))
-	"  -u <bootid> <label> <uri>\n"
+	"  -u <bootid> <label> <uri>   (uri: http:// or tftp://<ip>/<file>)\n"
+#endif
+#if (IS_ENABLED(CONFIG_EFI_NET_PXE_BOOT))
+	"  -n <bootid> <label> <eth-devnum>   (UEFI PXE / DHCP network boot)\n"
 #endif
 	"  -s '<optional data>'\n"
 	"efidebug boot rm <bootid#1> [<bootid#2> [<bootid#3> [...]]]\n"

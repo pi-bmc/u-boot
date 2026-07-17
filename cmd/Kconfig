@@ -2055,9 +2055,14 @@ config CMD_PCAP
 config BOOTP_PXE
 	bool "Send PXE client arch to BOOTP/DHCP server"
 	default y
-	depends on CMD_BOOTP && CMD_PXE
+	depends on CMD_BOOTP
 	help
 	  Supported for ARM, ARM64, and x86 for now.
+
+	  This only controls the DHCP options sent (client architecture /
+	  vendor class identifier); it is useful without CMD_PXE, e.g. for
+	  EFI_NET_PXE_BOOT where the bootfile is run as an EFI application
+	  instead of being parsed as a pxelinux config.
 
 config DHCP_PXE_CLIENTARCH
 	hex "DCHCP client system architecture type"

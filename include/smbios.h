@@ -383,4 +383,25 @@ int smbios_update_version_full(void *smbios_tab, const char *version);
 void smbios_prepare_measurement(const struct smbios3_entry *entry,
 				struct smbios_header *header);
 
+/**
+ * smbios_store_i2c() - copy the generated SMBIOS tables to an I2C EEPROM
+ *
+ * Writes the blob at @addr (the _SM3_ entry point followed by the structure
+ * table) to CONFIG_SMBIOS_I2C_STORE_OFFSET of the first UCLASS_I2C_EEPROM
+ * device, so a BMC can read the host inventory out-of-band. The write is
+ * skipped when the EEPROM already holds identical bytes.
+ *
+ * @addr:	start address of the tables, i.e. gd_smbios_start()
+ * @len:	length of the tables in bytes
+ * Return:	0 on success (or when the store is disabled), -ve on error
+ */
+#if CONFIG_IS_ENABLED(SMBIOS_I2C_STORE)
+int smbios_store_i2c(ulong addr, size_t len);
+#else
+static inline int smbios_store_i2c(ulong addr, size_t len)
+{
+	return 0;
+}
+#endif
+
 #endif /* _SMBIOS_H_ */

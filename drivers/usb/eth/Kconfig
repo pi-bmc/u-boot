@@ -20,6 +20,15 @@ config USB_ETHER_ASIX88179
 	  Say Y here if you would like to support ASIX AX88179 based USB 3.0
 	  Ethernet Devices.
 
+config USB_ETHER_ECM
+	bool "CDC-ECM (USB ethernet gadget) support"
+	depends on USB_HOST_ETHER
+	---help---
+	  Say Y here if you would like to support USB devices implementing
+	  the standard CDC-ECM (Ethernet Control Model) function, such as a
+	  Linux device running the g_ether / f_ecm USB gadget. The device
+	  is matched by interface class, not by vendor/product ID.
+
 config USB_ETHER_LAN75XX
 	bool "Microchip LAN75XX support"
 	depends on USB_HOST_ETHER

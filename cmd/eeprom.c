@@ -49,7 +49,15 @@ void eeprom_init(int bus)
 {
 	/* I2C EEPROM */
 #if CONFIG_IS_ENABLED(DM_I2C)
-	eeprom_i2c_bus = bus;
+	/*
+	 * A negative bus means "keep the current/default bus", matching the
+	 * SYS_I2C_LEGACY branch below. env/eeprom.c calls eeprom_init(-1), so
+	 * without this guard the DM bus number would be set to -1 and
+	 * uclass_get_device_by_seq(UCLASS_I2C, -1) always fails with -ENODEV,
+	 * breaking CONFIG_ENV_IS_IN_EEPROM on DM_I2C platforms.
+	 */
+	if (bus >= 0)
+		eeprom_i2c_bus = bus;
 #elif CONFIG_IS_ENABLED(SYS_I2C_LEGACY)
 	if (bus >= 0)
 		i2c_set_bus_num(bus);

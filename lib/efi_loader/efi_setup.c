@@ -359,6 +359,14 @@ efi_status_t efi_init_obj_list(void)
 		if (ret != EFI_SUCCESS)
 			goto out;
 	}
+#if IS_ENABLED(CONFIG_EFI_NET_PXE_BOOT)
+	if (IS_ENABLED(CONFIG_CMD_BOOTEFI_BOOTMGR)) {
+		/* seed a default PXE boot option (after the media auto-scan) */
+		ret = efi_bootmgr_add_default_net_option();
+		if (ret != EFI_SUCCESS)
+			goto out;
+	}
+#endif
 	if (IS_ENABLED(CONFIG_ACPI)) {
 		ret = efi_acpi_register();
 		if (ret != EFI_SUCCESS)

@@ -54,6 +54,7 @@ obj-y += efi_variable_tee.o
 else
 obj-y += efi_variable.o
 obj-y += efi_var_file.o
+obj-$(CONFIG_EFI_VARIABLE_I2C_STORE) += efi_var_i2c.o
 obj-$(CONFIG_EFI_VARIABLES_PRESEED) += efi_var_seed.o
 endif
 obj-y += efi_watchdog.o

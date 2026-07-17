@@ -189,6 +189,7 @@ static unsigned int usb_get_max_lun(struct us_data *us)
 static int usb_stor_probe_device(struct usb_device *udev)
 {
 	int lun, max_lun;
+	unsigned int stor_ifnum;
 
 #if CONFIG_IS_ENABLED(BLK)
 	struct us_data *data;
@@ -208,7 +209,11 @@ static int usb_stor_probe_device(struct usb_device *udev)
 	 * device.
 	 */
 	data = dev_get_plat(udev->dev);
-	if (!usb_storage_probe(udev, 0, data))
+	for (stor_ifnum = 0; stor_ifnum < udev->config.no_of_if; stor_ifnum++) {
+		if (usb_storage_probe(udev, stor_ifnum, data))
+			break;
+	}
+	if (stor_ifnum >= udev->config.no_of_if)
 		return 0;
 	max_lun = usb_get_max_lun(data);
 	for (lun = 0; lun <= max_lun; lun++) {
@@ -263,7 +268,11 @@ static int usb_stor_probe_device(struct usb_device *udev)
 		return -ENOSPC;
 	}
 
-	if (!usb_storage_probe(udev, 0, &usb_stor[usb_max_devs]))
+	for (stor_ifnum = 0; stor_ifnum < udev->config.no_of_if; stor_ifnum++) {
+		if (usb_storage_probe(udev, stor_ifnum, &usb_stor[usb_max_devs]))
+			break;
+	}
+	if (stor_ifnum >= udev->config.no_of_if)
 		return 0;
 
 	/*
@@ -1319,8 +1328,11 @@ int usb_storage_probe(struct usb_device *dev, unsigned int ifnum,
 	/* let's examine the device now */
 	iface = &dev->config.if_desc[ifnum];
 
-	if (dev->descriptor.bDeviceClass != 0 ||
-			iface->desc.bInterfaceClass != USB_CLASS_MASS_STORAGE ||
+	/*
+	 * Composite devices (bDeviceClass = 0xEF / IAD) define their class at
+	 * the interface level, so check only the interface class here.
+	 */
+	if (iface->desc.bInterfaceClass != USB_CLASS_MASS_STORAGE ||
 			iface->desc.bInterfaceSubClass < US_SC_MIN ||
 			iface->desc.bInterfaceSubClass > US_SC_MAX) {
 		debug("Not mass storage\n");

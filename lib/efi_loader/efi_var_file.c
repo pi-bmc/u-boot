@@ -37,6 +37,22 @@ static efi_status_t __maybe_unused efi_set_blk_dev_to_system_partition(void)
 	char part_str[PART_STR_LEN];
 	int r;
 
+#ifdef CONFIG_EFI_VAR_FILE_STORE_IFACE
+	/*
+	 * Optional fixed target: store ubootefi.var on a configured volume
+	 * (e.g. "usb :auto") instead of the auto-detected EFI system
+	 * partition. Useful when the variable file must live on a specific
+	 * disk - for example one provided out-of-band by a BMC that manages
+	 * the variables directly. An empty interface keeps the default
+	 * (auto-detected system partition) behaviour.
+	 */
+	if (CONFIG_EFI_VAR_FILE_STORE_IFACE[0]) {
+		r = fs_set_blk_dev(CONFIG_EFI_VAR_FILE_STORE_IFACE,
+				   CONFIG_EFI_VAR_FILE_STORE_DEV, FS_TYPE_ANY);
+		return r ? EFI_DEVICE_ERROR : EFI_SUCCESS;
+	}
+#endif
+
 	if (efi_system_partition.uclass_id == UCLASS_INVALID)
 		return EFI_DEVICE_ERROR;
 
@@ -50,6 +66,7 @@ static efi_status_t __maybe_unused efi_set_blk_dev_to_system_partition(void)
 	return EFI_SUCCESS;
 }
 
+#ifndef CONFIG_EFI_VARIABLE_I2C_STORE
 /**
  * efi_var_to_file() - save non-volatile variables as file
  *
@@ -95,6 +112,7 @@ out:
 	return EFI_SUCCESS;
 #endif
 }
+#endif /* !CONFIG_EFI_VARIABLE_I2C_STORE */
 
 efi_status_t efi_var_restore(struct efi_var_file *buf, bool safe)
 {
@@ -139,6 +157,7 @@ efi_status_t efi_var_restore(struct efi_var_file *buf, bool safe)
 	return EFI_SUCCESS;
 }
 
+#ifndef CONFIG_EFI_VARIABLE_I2C_STORE
 /**
  * efi_var_from_file() - read variables from file
  *
@@ -183,3 +202,4 @@ error:
 #endif
 	return EFI_SUCCESS;
 }
+#endif /* !CONFIG_EFI_VARIABLE_I2C_STORE */
