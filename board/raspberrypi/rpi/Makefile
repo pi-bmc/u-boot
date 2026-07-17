@@ -4,5 +4,7 @@
 
 obj-y	:= rpi.o
 obj-y	+= lowlevel_init.o
+obj-$(CONFIG_BCM2712) += bootspi.o
+obj-$(CONFIG_SYSINFO) += sysinfo.o
 
 obj-$(CONFIG_GENERATE_ACPI_TABLE) += dsdt_generated.o

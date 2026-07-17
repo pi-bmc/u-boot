@@ -127,6 +127,12 @@ static int env_eeprom_load(void)
 	eeprom_read(CONFIG_SYS_I2C_EEPROM_ADDR,
 		off, (uchar *)buf_env, CONFIG_ENV_SIZE);
 
+	if (IS_ENABLED(CONFIG_ENV_EEPROM_KEEP_DEFAULTS)) {
+		env_set_default_vars(0, NULL, 0);
+
+		return env_import(buf_env, 1, H_EXTERNAL | H_NOCLEAR);
+	}
+
 	return env_import(buf_env, 1, H_EXTERNAL);
 }
 

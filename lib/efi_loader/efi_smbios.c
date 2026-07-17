@@ -57,7 +57,7 @@ efi_status_t efi_smbios_register(void)
 
 static int install_smbios_table(void)
 {
-	ulong addr;
+	ulong addr, end;
 	void *buf;
 
 	if (!IS_ENABLED(CONFIG_GENERATE_SMBIOS_TABLE) ||
@@ -71,7 +71,8 @@ static int install_smbios_table(void)
 		return log_msg_ret("mem", -ENOMEM);
 
 	addr = map_to_sysmem(buf);
-	if (!write_smbios_table(addr)) {
+	end = write_smbios_table(addr);
+	if (!end) {
 		log_err("Failed to write SMBIOS table\n");
 		return log_msg_ret("smbios", -EINVAL);
 	}
@@ -79,6 +80,13 @@ static int install_smbios_table(void)
 	/* Make a note of where we put it */
 	log_debug("SMBIOS tables written to %lx\n", addr);
 	gd->arch.smbios_start = addr;
+
+	/*
+	 * Mirror the tables into the I2C EEPROM (when configured) so a BMC can
+	 * read the host inventory out-of-band. Best-effort: a failure here must
+	 * not stop the EFI tables from being installed.
+	 */
+	smbios_store_i2c(addr, end - addr);
 
 	return 0;
 }

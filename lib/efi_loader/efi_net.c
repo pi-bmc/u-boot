@@ -17,9 +17,11 @@
 
 #define LOG_CATEGORY LOGC_EFI
 
+#include <efi.h>
 #include <efi_device_path.h>
 #include <efi_loader.h>
 #include <env.h>
+#include <image.h>
 #include <dm.h>
 #include <linux/sizes.h>
 #include <malloc.h>
@@ -99,6 +101,9 @@ struct efi_net_obj {
 #endif
 #if IS_ENABLED(CONFIG_EFI_HTTP_PROTOCOL)
 	struct efi_service_binding_protocol http_service_binding;
+#endif
+#if IS_ENABLED(CONFIG_EFI_NET_PXE_BOOT)
+	struct efi_load_file_protocol load_file;
 #endif
 	void *new_tx_packet;
 	void *transmit_buffer;
@@ -1120,6 +1125,97 @@ set_addr:
 	return r;
 }
 
+#if IS_ENABLED(CONFIG_EFI_NET_PXE_BOOT)
+/* Cached PXE download, valid between the two LoadFile calls for one boot. */
+static efi_uintn_t efi_net_pxe_size;
+static ulong efi_net_pxe_addr;
+static bool efi_net_pxe_ready;
+
+/**
+ * efi_net_load_file() - EFI_LOAD_FILE_PROTOCOL producer for PXE network boot
+ *
+ * Lets the UEFI boot manager boot a Boot#### option whose device path is a
+ * NIC's MAC() path. Presents as a UEFI PXE client (client architecture from
+ * CONFIG_DHCP_PXE_CLIENTARCH), runs DHCP and TFTPs the server-provided
+ * bootfile. Implements the two-call LoadFile convention expected by
+ * efi_load_image_from_path(): the first call (@buffer == NULL) downloads the
+ * image, reports its size and returns EFI_BUFFER_TOO_SMALL; the second call
+ * copies it into the caller-allocated @buffer.
+ *
+ * @this:		the Load File protocol instance
+ * @file_path:		remaining device path (unused; DHCP selects the bootfile)
+ * @boot_policy:	must be true - only boot-manager PXE load is supported
+ * @buffer_size:	on entry the buffer size, on exit the image size
+ * @buffer:		buffer to receive the image, or NULL to query the size
+ * Return:		status code
+ */
+static efi_status_t EFIAPI efi_net_load_file(struct efi_load_file_protocol *this,
+					     struct efi_device_path *file_path,
+					     bool boot_policy,
+					     efi_uintn_t *buffer_size,
+					     void *buffer)
+{
+	EFI_ENTRY("%p, %p, %d, %p, %p", this, file_path, boot_policy,
+		  buffer_size, buffer);
+
+	if (!this || !buffer_size)
+		return EFI_EXIT(EFI_INVALID_PARAMETER);
+
+	/* Only the boot manager's network boot is supported, not generic load. */
+	if (!boot_policy)
+		return EFI_EXIT(EFI_UNSUPPORTED);
+
+	/*
+	 * We only serve the DHCP-provided bootfile, which corresponds to an
+	 * empty remaining device path. A request for a specific file - e.g. a
+	 * device tree the boot manager tries to fetch from the network via
+	 * efi_load_distro_fdt() - is not something PXE resolves here; return
+	 * EFI_NOT_FOUND so the caller falls back to U-Boot's internal device
+	 * tree instead of mistaking the boot image for an FDT.
+	 */
+	if (file_path && file_path->type != DEVICE_PATH_TYPE_END)
+		return EFI_EXIT(EFI_NOT_FOUND);
+
+	if (!efi_net_pxe_ready) {
+		const char *addr_str = env_get("kernel_addr_r");
+		int arch = efi_get_pxe_arch();
+
+		/*
+		 * Download to kernel_addr_r, like the bootstd 'efi' bootmeth,
+		 * NOT image_load_addr: on some boards (e.g. Raspberry Pi) the
+		 * firmware device tree that $fdt_addr points to sits near
+		 * image_load_addr, and overwriting it makes the boot manager's
+		 * efi_install_fdt() fail later with "invalid device tree".
+		 */
+		efi_net_pxe_addr = addr_str ? hextoul(addr_str, NULL)
+					    : image_load_addr;
+		if (arch >= 0)
+			env_set_hex("bootp_arch", arch);
+		env_set("bootfile", NULL);
+
+		if (dhcp_run(efi_net_pxe_addr, NULL, true))
+			return EFI_EXIT(EFI_DEVICE_ERROR);
+
+		efi_net_pxe_size = env_get_hex("filesize", 0);
+		if (!efi_net_pxe_size)
+			return EFI_EXIT(EFI_NOT_FOUND);
+		efi_net_pxe_ready = true;
+	}
+
+	if (!buffer || *buffer_size < efi_net_pxe_size) {
+		*buffer_size = efi_net_pxe_size;
+		return EFI_EXIT(EFI_BUFFER_TOO_SMALL);
+	}
+
+	/* The EFI-allocated buffer may overlap the download; use memmove(). */
+	memmove(buffer, (void *)efi_net_pxe_addr, efi_net_pxe_size);
+	*buffer_size = efi_net_pxe_size;
+	efi_net_pxe_ready = false;	/* re-arm for the next boot attempt */
+
+	return EFI_EXIT(EFI_SUCCESS);
+}
+#endif /* CONFIG_EFI_NET_PXE_BOOT */
+
 /**
  * efi_net_register() - register the simple network protocol
  *
@@ -1203,6 +1299,17 @@ efi_status_t efi_net_register(struct udevice *dev)
 			     &netobj->pxe);
 	if (r != EFI_SUCCESS)
 		goto failure_to_add_protocol;
+#if IS_ENABLED(CONFIG_EFI_NET_PXE_BOOT)
+	/*
+	 * Load File protocol so the boot manager can PXE-boot a Boot#### option
+	 * whose device path is this NIC's MAC() path (see efi_net_load_file()).
+	 */
+	netobj->load_file.load_file = efi_net_load_file;
+	r = efi_add_protocol(&netobj->header, &efi_guid_load_file_protocol,
+			     &netobj->load_file);
+	if (r != EFI_SUCCESS)
+		goto failure_to_add_protocol;
+#endif
 	netobj->net.revision = EFI_SIMPLE_NETWORK_PROTOCOL_REVISION;
 	netobj->net.start = efi_net_start;
 	netobj->net.stop = efi_net_stop;
