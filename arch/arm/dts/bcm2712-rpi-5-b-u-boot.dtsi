@@ -1,0 +1,255 @@
+#include <config.h>
+#include <smbios_def.h>
+
+&pcie1 {
+	dma-ranges = <0x43000000 0x10 0x00000000  0x0 0x00000000  0x10 0x00000000>;
+};
+
+/*
+ * RP1 Southbridge — PCIe2 overrides
+ *
+ * On the Linux 7.x DTB the RP1 south bridge sits behind pcie2 as a PCI
+ * endpoint: pcie2 → pci@0,0 (virtual PCI-PCI bridge) → dev@0,0 (the RP1
+ * endpoint, which #includes rp1-common.dtsi).  Inside dev@0,0 a simple-bus
+ * (pci_ep_bus) hosts the RP1 peripheral devices: Ethernet (rp1_eth), USB
+ * (rp1_usb0/1), clocks, and GPIO.  (The 6.x "rp1_nexus" label is gone.)
+ *
+ * DMA path: RP1 peripheral → pci_ep_bus dma-ranges (bus 0x10_0000_0000
+ * → PCIe 0x10_0000_0000) → dev@0,0 / pci@0,0 (passthrough, no dma-ranges)
+ * → pcie2 dma-ranges (PCIe 0x10_0000_0000 → CPU 0x0).  We must NOT add
+ * dma-ranges to dev@0,0 — upstream omits them so addresses pass through
+ * unchanged.
+ *
+ * bootph-all on pci@0,0 and dev@0,0 pulls the full PCIe → PCI bridge → RP1
+ * chain into U-Boot's pre-relocation scan so the rp1 MFD driver can
+ * discover pci_ep_bus (marked bootph-all below) and its children.
+ */
+&pcie2 {
+	dma-ranges = <0x43000000 0x10 0x00000000  0x0 0x00000000  0x10 0x00000000>;
+
+	pci@0,0 {
+		bootph-all;
+
+		dev@0,0 {
+			bootph-all;
+		};
+	};
+};
+
+/*
+ * RP1 simple-bus and peripheral boot phase markers.
+ *
+ * pci_ep_bus (simple-bus in rp1-common.dtsi) must be marked bootph-all so
+ * U-Boot scans its children (rp1_eth, rp1_usb0/1, rp1_clocks, rp1_gpio).
+ * rp1_clocks must be available before rp1_eth probes (macb driver requests
+ * RP1_CLK_ETH / RP1_CLK_ETH_TSU via the clock framework).
+ *
+ * status = "okay" is already set for all three peripherals in the upstream
+ * bcm2712-rpi-5-b.dts; only the bootph annotation is added here.
+ */
+&pci_ep_bus {
+	bootph-all;
+
+	rp1_i2c1: i2c@40074000 {
+		compatible = "snps,designware-i2c";
+		reg = <0x00 0x40074000  0x0 0x1000>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+		clocks = <&rp1_clocks RP1_CLK_SYS>;
+		clock-frequency = <100000>;
+		pinctrl-names = "default";
+		pinctrl-0 = <&rp1_i2c1_pins>;
+		bootph-all;
+		status = "okay";
+
+		/*
+		 * One 24c256 shared by two consumers at different offsets:
+		 *   0x0000..0x3fff  UEFI variable store (blob at offset 0, capped
+		 *                    at CONFIG_ENV_OFFSET by efi_var_i2c.c)
+		 *   0x4000..0x7fff  U-Boot env (CONFIG_ENV_IS_IN_EEPROM,
+		 *                    SYS_I2C_EEPROM_ADDR=0x50, ENV_OFFSET=0x4000)
+		 * Real part or a BMC-emulated slave.  Env reaches it via the raw
+		 * i2c path but resolves to this same device (i2c_get_chip on 0x50),
+		 * so both use the driver-set 2-byte addressing.
+		 */
+		eeprom@50 {
+			compatible = "atmel,24c256";
+			reg = <0x50>;
+			pagesize = <64>;
+		};
+	};
+};
+
+&rp1_clocks {
+	bootph-all;
+};
+
+&rp1_eth {
+	bootph-all;
+};
+
+&rp1_usb0 {
+	bootph-all;
+};
+
+&rp1_usb1 {
+	bootph-all;
+};
+
+&rp1_gpio {
+	rp1_i2c1_pins: i2c1-pins {
+		pins = <2 3>;
+		function = <3>;
+		bias-pull-up;
+	};
+};
+
+
+/*
+ * Bootloader config (blconfig) NVMEM node.
+ *
+ * The VPU firmware copies the board's bootloader configuration block into
+ * DRAM and patches this node's reg property with the placement at runtime.
+ * U-Boot's rpi board code reads it via the nvmem API to detect things like
+ * POWER_OFF_ON_HALT for the power-button service. The "raspberrypi,bootloader-
+ * config" / "nvmem-rmem" compatible matches the same handling used on RPi 4
+ * (see bcm2711-rpi.dtsi).
+ *
+ * status starts as "disabled" and is flipped to "okay" by the firmware after
+ * it writes the real reg values; an alias makes it discoverable by label.
+ */
+&rmem {
+	blconfig: nvram@0 {
+		bootph-all;
+	};
+	blpubkey: nvram@1 {
+		bootph-all;
+	};
+};
+
+/*
+ * CPU temperature sensor.
+ *
+ * The upstream bcm2712.dtsi omits the AVS monitor and thermal-zones nodes, so
+ * re-add the avs-monitor syscon and its brcm,bcm2711-thermal sensor, matching
+ * the values the Raspberry Pi firmware DTB provides.  This mirrors the kernel
+ * overlay that restores thermal monitoring on the stripped mainline DT.
+ *
+ * U-Boot has no thermal-zone infrastructure: the calibration that Linux keeps
+ * in the cpu-thermal zone (coefficients = <slope offset>) lives directly on
+ * the sensor node here, where the bcm2711_thermal driver reads it.
+ *   BCM2712 calibration: temp(mC) = -550 * raw + 450000
+ */
+&soc {
+	avs_monitor: avs-monitor@7d542000 {
+		compatible = "brcm,bcm2711-avs-monitor",
+			     "syscon", "simple-mfd";
+		reg = <0x7d542000 0xf00>;
+		status = "okay";
+
+		thermal: thermal {
+			compatible = "brcm,bcm2711-thermal";
+			coefficients = <(-550) 450000>;
+			#thermal-sensor-cells = <0>;
+		};
+	};
+};
+
+/ {
+	aliases {
+		ethernet0 = &rp1_eth;
+		blconfig = &blconfig;
+		/*
+		 * Env addresses the EEPROM on U-Boot i2c bus 0 (the eeprom_init()
+		 * default), so pin rp1_i2c1 to DM seq 0.  The DM bus number is
+		 * independent of the RP1 hardware instance ("i2c1") and the Linux
+		 * device name (/dev/i2c-1).
+		 */
+		i2c0 = &rp1_i2c1;
+	};
+
+	smbios {
+		compatible = "u-boot,sysinfo-smbios";
+
+		smbios {
+			system {
+				manufacturer = "Raspberry Pi";
+				product = "5 Model B";
+				version = "";
+				serial = "";
+				sku = "";
+				family = "Raspberry Pi";
+			};
+
+			baseboard {
+				manufacturer = "Raspberry Pi";
+				product = CONFIG_SYS_BOARD;
+				version = "";
+				serial = "";
+				asset-tag = "";
+				chassis-location = "";
+				feature-flags = <SMBIOS_BOARD_FEAT_HOST_BOARD>;
+				board-type = <SMBIOS_BOARD_TYPE_MOTHERBOARD>;
+			};
+
+			chassis {
+				manufacturer = "Raspberry Pi";
+				version = "";
+				serial = "";
+				asset-tag = "";
+				chassis-type = <SMBIOS_ENCLOSURE_DESKTOP>;
+				bootup-state = <SMBIOS_STATE_SAFE>;
+				power-supply-state = <SMBIOS_STATE_SAFE>;
+				thermal-state = <SMBIOS_STATE_SAFE>;
+				security-status = <SMBIOS_SECURITY_NONE>;
+				oem-defined = <SMBIOS_ENCLOSURE_OEM_UND>;
+				height = <SMBIOS_ENCLOSURE_HEIGHT_UND>;
+				number-of-power-cords = <SMBIOS_POWCORD_NUM_UND>;
+			};
+
+			processor {
+				version = "";
+				processor-type = <SMBIOS_PROCESSOR_TYPE_CENTRAL>;
+				processor-status = <SMBIOS_PROCESSOR_STATUS_ENABLED>;
+				upgrade = <SMBIOS_PROCESSOR_UPGRADE_NONE>;
+				family = <SMBIOS_PROCESSOR_FAMILY_EXT>;
+				family2 = <SMBIOS_PROCESSOR_FAMILY_ARMV8>;
+				socket-design = "";
+				serial = "";
+				asset-tag = "";
+				part-number = "";
+			};
+
+			cache {
+				l1-cache {
+					socket-design = "";
+					config = <(SMBIOS_CACHE_LEVEL_1 |
+							SMBIOS_CACHE_ENABLED |
+							SMBIOS_CACHE_OP_WB)>;
+				};
+
+				l2-cache {
+					socket-design = "";
+					config = <(SMBIOS_CACHE_LEVEL_2 |
+							SMBIOS_CACHE_ENABLED |
+							SMBIOS_CACHE_OP_WB)>;
+				};
+			};
+
+			/*
+			 * No static system-slot / memory-array / memory-device /
+			 * memory-array-mapped-address nodes.
+			 *
+			 * SMBIOS Type 16/17/19 are generated dynamically by
+			 * lib/smbios.c from the firmware DTB's /memory node(s) -
+			 * the only source of the real, per-SKU installed size.
+			 * A memory-array node with child entries instead forces
+			 * the CUSTOM path, which reports 0 capacity unless every
+			 * field is hardcoded (and can't express a fleet's varying
+			 * RAM sizes anyway).
+			 *
+			 * The Pi has no expansion slots, so no system-slot node.
+			 */
+		};
+	};
+};

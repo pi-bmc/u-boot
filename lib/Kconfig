@@ -1167,6 +1167,39 @@ config GENERATE_SMBIOS_TABLE_VERBOSE
 	help
 	  Provide verbose SMBIOS information.
 
+config SMBIOS_I2C_STORE
+	bool "Copy the generated SMBIOS tables into an I2C EEPROM"
+	depends on GENERATE_SMBIOS_TABLE && DM_I2C && I2C_EEPROM
+	help
+	  Write the SMBIOS entry point and structure table generated at boot to
+	  a region of the first UCLASS_I2C_EEPROM device, so a BMC can report
+	  host inventory (product, version, serial, UUID, CPU, cache) over
+	  Redfish/IPMI while the host is powered off. The tables carry strictly
+	  more than the environment does - the type 1 UUID exists nowhere else.
+
+	  The blob is self-describing: the _SM3_ anchor holds the table length,
+	  so standard SMBIOS tooling can parse it straight out of the EEPROM.
+	  The write is skipped when the EEPROM already holds identical bytes, so
+	  a normal boot only pays for one read.
+
+config SMBIOS_I2C_STORE_OFFSET
+	hex "Offset of the SMBIOS region within the EEPROM"
+	depends on SMBIOS_I2C_STORE
+	default 0x6000
+	help
+	  Byte offset of the SMBIOS region. It must not overlap the UEFI
+	  variable store (which starts at offset 0) or the environment
+	  (CONFIG_ENV_OFFSET for CONFIG_ENV_SIZE bytes).
+
+config SMBIOS_I2C_STORE_SIZE
+	hex "Size of the SMBIOS region within the EEPROM"
+	depends on SMBIOS_I2C_STORE
+	default 0x800
+	help
+	  Bytes reserved for the SMBIOS region. The tables run to a few hundred
+	  bytes in practice; a larger blob is rejected rather than written over
+	  whatever follows the region.
+
 endmenu
 
 config LIB_RATIONAL

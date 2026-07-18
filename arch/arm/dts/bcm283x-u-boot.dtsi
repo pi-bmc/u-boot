@@ -1,10 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0+
-/*
- * U-Boot addition to keep baudrate set by firmware
- * and also initialize before relocation.
- *
- * (C) Copyright 2016 Fabian Vogt <fvogt@suse.com>
- */
+#include <config.h>
+#include <smbios_def.h>
 
 &uart0 {
 	skip-init;
@@ -26,4 +21,90 @@
 
 &uart1_gpio14 {
 	bootph-all;
+};
+
+/ {
+	smbios {
+		compatible = "u-boot,sysinfo-smbios";
+
+		smbios {
+			system {
+				manufacturer = "Raspberry Pi";
+				version = "";
+				serial = "";
+				sku = "";
+				family = "Raspberry Pi";
+			};
+
+			baseboard {
+				manufacturer = "Raspberry Pi";
+				product = CONFIG_SYS_BOARD;
+				version = "";
+				serial = "";
+				asset-tag = "";
+				chassis-location = "";
+				feature-flags = <SMBIOS_BOARD_FEAT_HOST_BOARD>;
+				board-type = <SMBIOS_BOARD_TYPE_MOTHERBOARD>;
+			};
+
+			chassis {
+				manufacturer = "Raspberry Pi";
+				version = "";
+				serial = "";
+				asset-tag = "";
+				chassis-type = <SMBIOS_ENCLOSURE_DESKTOP>;
+				bootup-state = <SMBIOS_STATE_SAFE>;
+				power-supply-state = <SMBIOS_STATE_SAFE>;
+				thermal-state = <SMBIOS_STATE_SAFE>;
+				security-status = <SMBIOS_SECURITY_NONE>;
+				oem-defined = <SMBIOS_ENCLOSURE_OEM_UND>;
+				height = <SMBIOS_ENCLOSURE_HEIGHT_UND>;
+				number-of-power-cords = <SMBIOS_POWCORD_NUM_UND>;
+			};
+
+			processor {
+				version = "";
+				processor-type = <SMBIOS_PROCESSOR_TYPE_CENTRAL>;
+				processor-status = <SMBIOS_PROCESSOR_STATUS_ENABLED>;
+				upgrade = <SMBIOS_PROCESSOR_UPGRADE_NONE>;
+				family = <SMBIOS_PROCESSOR_FAMILY_EXT>;
+				family2 = <SMBIOS_PROCESSOR_FAMILY_ARMV8>;
+				socket-design = "";
+				serial = "";
+				asset-tag = "";
+				part-number = "";
+			};
+
+			cache {
+				l1-cache {
+					socket-design = "";
+					config = <(SMBIOS_CACHE_LEVEL_1 |
+							SMBIOS_CACHE_ENABLED |
+							SMBIOS_CACHE_OP_WB)>;
+				};
+
+				l2-cache {
+					socket-design = "";
+					config = <(SMBIOS_CACHE_LEVEL_2 |
+							SMBIOS_CACHE_ENABLED |
+							SMBIOS_CACHE_OP_WB)>;
+				};
+			};
+
+			/*
+			 * No static system-slot / memory-array / memory-device /
+			 * memory-array-mapped-address nodes.
+			 *
+			 * SMBIOS Type 16/17/19 are generated dynamically by
+			 * lib/smbios.c from the firmware DTB's /memory node(s) -
+			 * the only source of the real, per-SKU installed size.
+			 * A memory-array node with child entries instead forces
+			 * the CUSTOM path, which reports 0 capacity unless every
+			 * field is hardcoded (and can't express a fleet's varying
+			 * RAM sizes anyway).
+			 *
+			 * The Pi has no expansion slots, so no system-slot node.
+			 */
+		};
+	};
 };

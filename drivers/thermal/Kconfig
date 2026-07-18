@@ -8,6 +8,17 @@ config DM_THERMAL
 
 if DM_THERMAL
 
+config BCM2711_THERMAL
+	bool "Broadcom AVS RO thermal sensor driver"
+	depends on ARCH_BCM283X
+	select REGMAP
+	select SYSCON
+	help
+	  Support for the thermal sensor in the AVS monitor block found on
+	  Broadcom BCM2711 (Raspberry Pi 4) and BCM2712 (Raspberry Pi 5) SoCs.
+	  The driver reads the CPU temperature via the AVS monitor syscon and
+	  exposes it through the thermal uclass (e.g. the 'temperature' command).
+
 config IMX_THERMAL
 	bool "Temperature sensor driver for Freescale i.MX SoCs"
 	depends on MX6 || MX7

@@ -585,6 +585,8 @@ efi_status_t efi_bootmgr_get_unused_bootoption(u16 *buf,
 					       efi_uintn_t buf_size, u32 *index);
 /* Generate the media device boot option */
 efi_status_t efi_bootmgr_update_media_device_boot_option(void);
+/* Generate a default PXE (network) boot option */
+efi_status_t efi_bootmgr_add_default_net_option(void);
 /* Delete selected boot option */
 efi_status_t efi_bootmgr_delete_boot_option(u16 boot_index);
 /* Invoke EFI boot manager */

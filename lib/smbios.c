@@ -1205,16 +1205,25 @@ static int smbios_write_type9(ulong *current, int *handle,
 static u64 smbios_pop_size_from_memory_node(ofnode node)
 {
 	const fdt32_t *reg;
-	int len;
-	u64 size_bytes;
+	int len, cells, i;
+	u64 size_bytes = 0;
 
 	/* Read property 'reg' from the node */
 	reg = ofnode_read_prop(node, "reg", &len);
 	if (!reg || len < sizeof(fdt32_t) * 4 || len % sizeof(fdt32_t))
 		return 0;
 
-	/* Combine hi/lo for size (typically 64-bit) */
-	size_bytes = ((u64)fdt32_to_cpu(reg[2]) << 32) | fdt32_to_cpu(reg[3]);
+	/*
+	 * The root #address-cells/#size-cells are 2/2 on arm64, so 'reg' is a
+	 * list of <addr-hi addr-lo size-hi size-lo> tuples. Split memory (e.g.
+	 * the RPi 5's below-/above-4GiB banks) is expressed as several tuples
+	 * in a single 'memory' node, so sum every tuple's size - reading only
+	 * the first would report just the first bank.
+	 */
+	cells = len / (int)sizeof(fdt32_t);
+	for (i = 0; i + 4 <= cells; i += 4)
+		size_bytes += ((u64)fdt32_to_cpu(reg[i + 2]) << 32) |
+			      fdt32_to_cpu(reg[i + 3]);
 
 	return size_bytes;
 }
@@ -1316,16 +1325,20 @@ smbios_pop_type16_from_memcontroller_node(ofnode node, struct smbios_type16 *t)
 static void smbios_pop_type16_si(struct smbios_ctx *ctx,
 				 struct smbios_type16 *t)
 {
-	t->location = smbios_get_val_si(ctx, "location", SYSID_NONE,
+	t->location = smbios_get_val_si(ctx, "location",
+					SYSID_SM_MEMARRAY_LOCATION,
 					SMBIOS_MA_LOCATION_UNKNOWN);
-	t->use = smbios_get_val_si(ctx, "use", SYSID_NONE,
+	t->use = smbios_get_val_si(ctx, "use", SYSID_SM_MEMARRAY_USE,
 				   SMBIOS_MA_USE_UNKNOWN);
-	t->mem_err_corr = smbios_get_val_si(ctx, "memory-error-correction", SYSID_NONE,
+	t->mem_err_corr = smbios_get_val_si(ctx, "memory-error-correction",
+					    SYSID_SM_MEMARRAY_ECC,
 					    SMBIOS_MA_ERRCORR_UNKNOWN);
-	t->max_cap = smbios_get_val_si(ctx, "maximum-capacity", SYSID_NONE, 0);
+	t->max_cap = smbios_get_val_si(ctx, "maximum-capacity",
+				       SYSID_SM_MEMARRAY_MAXCAP, 0);
 	t->mem_err_info_hdl = smbios_get_val_si(ctx, "memory-error-information-handle",
 						SYSID_NONE, SMBIOS_MA_ERRINFO_NONE);
-	t->num_of_mem_dev = smbios_get_val_si(ctx, "number-of-memory-devices", SYSID_NONE, 1);
+	t->num_of_mem_dev = smbios_get_val_si(ctx, "number-of-memory-devices",
+					      SYSID_SM_MEMARRAY_NUM_DEV, 1);
 	t->ext_max_cap = smbios_get_u64_si(ctx, "extended-maximum-capacity", SYSID_NONE, 0);
 }
 
@@ -1348,7 +1361,7 @@ static int smbios_write_type16_1array(ulong *current, int handle,
 	eos_addr = (u8 *)t + len - sizeof(t->eos);
 	smbios_set_eos(ctx, eos_addr);
 
-	if (type == SMBIOS_MEM_CUSTOM)
+	if (type == SMBIOS_MEM_CUSTOM || type == SMBIOS_MEM_SYSINFO)
 		smbios_pop_type16_si(ctx, t);
 	else if (type == SMBIOS_MEM_FDT_MEMCON_NODE)
 		smbios_pop_type16_from_memcontroller_node(ctx->node, t);
@@ -1366,6 +1379,30 @@ static int smbios_write_type16_1array(ulong *current, int handle,
 	return len;
 }
 
+/**
+ * smbios_sysinfo_mem_count() - number of memory devices the sysinfo driver
+ *				wants to describe
+ *
+ * When the active sysinfo device answers SYSID_SM_MEMARRAY_NUM_DEV, the memory
+ * topology (types 16/17/19) is generated straight from that driver instead of
+ * scanning the FDT. This is what lets a board with no static "smbios" DT node
+ * still report an accurate physical memory array.
+ *
+ * Return: the reported device count (>= 1), or 0 when the sysinfo driver does
+ *	   not provide memory information.
+ */
+static int smbios_sysinfo_mem_count(struct smbios_ctx *ctx)
+{
+	int cnt;
+
+	if (!ctx->dev)
+		return 0;
+	if (sysinfo_get_int(ctx->dev, SYSID_SM_MEMARRAY_NUM_DEV, &cnt))
+		return 0;
+
+	return cnt > 0 ? cnt : 0;
+}
+
 static int smbios_write_type16(ulong *current, int *handle,
 			       struct smbios_ctx *ctx)
 {
@@ -1376,6 +1413,14 @@ static int smbios_write_type16(ulong *current, int *handle,
 	u64 total = 0;
 	int count = 0;
 	int hdl_base = *handle;
+
+	/*
+	 * Preferred source: a single physical memory array described by the
+	 * sysinfo driver. Its handle is saved so types 17/19 can link to it.
+	 */
+	if (smbios_sysinfo_mem_count(ctx))
+		return smbios_write_type16_1array(current, *handle, ctx, 0,
+						  SMBIOS_MEM_SYSINFO);
 
 	if (!IS_ENABLED(CONFIG_OF_CONTROL))
 		return 0;	/* Error, return 0-length */
@@ -1446,21 +1491,26 @@ static void smbios_pop_type17_general_si(struct smbios_ctx *ctx,
 	t->mem_err_info_hdl =
 		smbios_get_val_si(ctx, "memory-error-information-handle",
 				  SYSID_NONE, SMBIOS_MD_ERRINFO_NONE);
-	t->total_width = smbios_get_val_si(ctx, "total-width", SYSID_NONE, 0);
-	t->data_width = smbios_get_val_si(ctx, "data-width", SYSID_NONE, 0);
+	t->total_width = smbios_get_val_si(ctx, "total-width",
+					   SYSID_SM_MEMDEV_TOTALWIDTH, 0);
+	t->data_width = smbios_get_val_si(ctx, "data-width",
+					  SYSID_SM_MEMDEV_DATAWIDTH, 0);
 	t->form_factor = smbios_get_val_si(ctx, "form-factor",
-					   SYSID_NONE, SMBIOS_MD_FF_UNKNOWN);
+					   SYSID_SM_MEMDEV_FORMFACTOR,
+					   SMBIOS_MD_FF_UNKNOWN);
 	t->dev_set = smbios_get_val_si(ctx, "device-set", SYSID_NONE,
 				       SMBIOS_MD_DEVSET_UNKNOWN);
-	t->dev_locator = smbios_add_prop_si(ctx, "device-locator", SYSID_NONE,
-					    NULL);
+	t->dev_locator = smbios_add_prop_si(ctx, "device-locator",
+					    SYSID_SM_MEMDEV_LOCATOR, NULL);
 	t->bank_locator = smbios_add_prop_si(ctx, "bank-locator", SYSID_NONE,
 					     NULL);
 	t->mem_type = smbios_get_val_si(ctx, "memory-type",
-					SYSID_NONE, SMBIOS_MD_TYPE_UNKNOWN);
+					SYSID_SM_MEMDEV_TYPE,
+					SMBIOS_MD_TYPE_UNKNOWN);
 	t->type_detail = smbios_get_val_si(ctx, "type-detail",
-					   SYSID_NONE, SMBIOS_MD_TD_UNKNOWN);
-	t->speed = smbios_get_val_si(ctx, "speed", SYSID_NONE,
+					   SYSID_SM_MEMDEV_TYPEDETAIL,
+					   SMBIOS_MD_TD_UNKNOWN);
+	t->speed = smbios_get_val_si(ctx, "speed", SYSID_SM_MEMDEV_SPEED,
 				     SMBIOS_MD_SPEED_UNKNOWN);
 	t->manufacturer = smbios_add_prop_si(ctx, "manufacturer", SYSID_NONE,
 					     NULL);
@@ -1530,8 +1580,8 @@ static void
 smbios_pop_type17_size_from_memory_node(ofnode node, struct smbios_type17 *t)
 {
 	const fdt32_t *reg;
-	int len;
-	u64 sz;
+	int len, cells, i;
+	u64 sz = 0;
 	u32 size_mb;
 
 	/* Read property 'reg' from the node */
@@ -1539,8 +1589,15 @@ smbios_pop_type17_size_from_memory_node(ofnode node, struct smbios_type17 *t)
 	if (!reg || len < sizeof(fdt32_t) * 4 || len % sizeof(fdt32_t))
 		return;
 
-	/* Combine hi/lo for size (typically 64-bit) */
-	sz = ((u64)fdt32_to_cpu(reg[2]) << 32) | fdt32_to_cpu(reg[3]);
+	/*
+	 * Sum every <addr-hi addr-lo size-hi size-lo> tuple so a memory node
+	 * with split banks (see smbios_pop_size_from_memory_node) reports its
+	 * full size as one memory device rather than just the first bank.
+	 */
+	cells = len / (int)sizeof(fdt32_t);
+	for (i = 0; i + 4 <= cells; i += 4)
+		sz += ((u64)fdt32_to_cpu(reg[i + 2]) << 32) |
+		      fdt32_to_cpu(reg[i + 3]);
 
 	/* Convert size to MB */
 	size_mb = (u32)(sz >> 20); /* 1 MB = 2^20 */
@@ -1557,9 +1614,10 @@ smbios_pop_type17_size_from_memory_node(ofnode node, struct smbios_type17 *t)
 static void smbios_pop_type17_size_si(struct smbios_ctx *ctx,
 				      struct smbios_type17 *t)
 {
-	t->size = smbios_get_val_si(ctx, "size", SYSID_NONE,
+	t->size = smbios_get_val_si(ctx, "size", SYSID_SM_MEMDEV_SIZE,
 				    SMBIOS_MD_SIZE_UNKNOWN);
-	t->ext_size = smbios_get_val_si(ctx, "extended-size", SYSID_NONE, 0);
+	t->ext_size = smbios_get_val_si(ctx, "extended-size",
+					SYSID_SM_MEMDEV_EXTSIZE, 0);
 }
 
 static int
@@ -1687,6 +1745,14 @@ static int smbios_write_type17_mem(ulong *current, int handle,
 				      &hdl_size) &&
 		    hdl_size == SYSINFO_MEM_HANDLE_MAX * sizeof(u16))
 			t->phy_mem_array_hdl = *((u16 *)hdl + idx);
+	} else if (type == SMBIOS_MEM_SYSINFO) {
+		smbios_pop_type17_size_si(ctx, t);
+
+		/* Link to the single type 16 array saved by the sysinfo path */
+		if (!sysinfo_get_data(ctx->dev, SYSID_SM_MEMARRAY_HANDLE, &hdl,
+				      &hdl_size) &&
+		    hdl_size == SYSINFO_MEM_HANDLE_MAX * sizeof(u16))
+			t->phy_mem_array_hdl = *((u16 *)hdl);
 	}
 
 	/* Write other general fields */
@@ -1779,6 +1845,24 @@ static int smbios_write_type1719(ulong *current, int *handle,
 {
 	int len = 0;
 	int idx;
+	int cnt;
+
+	/*
+	 * Preferred source: memory devices described by the sysinfo driver,
+	 * each linking back to the single type 16 array. Used when there is no
+	 * static "smbios" DT node (e.g. a runtime-provided DTB).
+	 */
+	cnt = smbios_sysinfo_mem_count(ctx);
+	if (cnt) {
+		int hdl_base = *handle;
+
+		for (idx = 0; idx < cnt; idx++) {
+			*handle = hdl_base + idx;
+			len += mem_cb(current, *handle, ctx, idx,
+				      SMBIOS_MEM_SYSINFO);
+		}
+		return len;
+	}
 
 	if (!IS_ENABLED(CONFIG_OF_CONTROL))
 		return 0;	/* Error, return 0-length */
@@ -1811,20 +1895,21 @@ static void smbios_pop_type19_general_si(struct smbios_ctx *ctx,
 					 struct smbios_type19 *t)
 {
 	t->partition_wid =
-		smbios_get_val_si(ctx, "partition-width ",
-				  SYSID_NONE, SMBIOS_MAMA_PW_DEF);
+		smbios_get_val_si(ctx, "partition-width",
+				  SYSID_SM_MEMMAP_PARTWIDTH, SMBIOS_MAMA_PW_DEF);
 }
 
 static void smbios_pop_type19_addr_si(struct smbios_ctx *ctx,
 				      struct smbios_type19 *t)
 {
-	t->start_addr = smbios_get_val_si(ctx, "starting-address", SYSID_NONE,
-					  0);
-	t->end_addr = smbios_get_val_si(ctx, "ending-address", SYSID_NONE, 0);
+	t->start_addr = smbios_get_val_si(ctx, "starting-address",
+					  SYSID_SM_MEMMAP_START, 0);
+	t->end_addr = smbios_get_val_si(ctx, "ending-address",
+					SYSID_SM_MEMMAP_END, 0);
 	t->ext_start_addr = smbios_get_u64_si(ctx, "extended-starting-address",
-					      SYSID_NONE, 0);
+					      SYSID_SM_MEMMAP_EXTSTART, 0);
 	t->ext_end_addr = smbios_get_u64_si(ctx, "extended-ending-address",
-					    SYSID_NONE, 0);
+					    SYSID_SM_MEMMAP_EXTEND, 0);
 }
 
 static void
@@ -1936,6 +2021,14 @@ static int smbios_write_type19_mem(ulong *current, int handle,
 				      &hdl_size) &&
 		    hdl_size == SYSINFO_MEM_HANDLE_MAX * sizeof(u16))
 			t->mem_array_hdl = *((u16 *)hdl + idx);
+	} else if (type == SMBIOS_MEM_SYSINFO) {
+		smbios_pop_type19_addr_si(ctx, t);
+
+		/* Link to the single type 16 array saved by the sysinfo path */
+		if (!sysinfo_get_data(ctx->dev, SYSID_SM_MEMARRAY_HANDLE, &hdl,
+				      &hdl_size) &&
+		    hdl_size == SYSINFO_MEM_HANDLE_MAX * sizeof(u16))
+			t->mem_array_hdl = *((u16 *)hdl);
 	}
 
 	/* Write other general fields */

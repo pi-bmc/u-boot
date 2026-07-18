@@ -3,37 +3,97 @@ CONFIG_POSITION_INDEPENDENT=y
 CONFIG_ARCH_BCM283X=y
 CONFIG_TARGET_RPI_ARM64=y
 CONFIG_NR_DRAM_BANKS=8
-CONFIG_ENV_SIZE=0x4000
-CONFIG_DEFAULT_DEVICE_TREE="bcm2711-rpi-4-b"
+CONFIG_ENV_SIZE=0x2000
+CONFIG_DEFAULT_DEVICE_TREE="broadcom/bcm2711-rpi-4-b"
 CONFIG_OF_LIBFDT_OVERLAY=y
 CONFIG_DM_RESET=y
 CONFIG_SYS_LOAD_ADDR=0x1000000
 CONFIG_PCI=y
-CONFIG_EFI_RUNTIME_UPDATE_CAPSULE=y
-CONFIG_EFI_CAPSULE_FIRMWARE_RAW=y
-CONFIG_EFI_HTTP_BOOT=y
-CONFIG_BOOTSTD_DEFAULTS=y
+# CONFIG_EFI_RUNTIME_UPDATE_CAPSULE is not set
+# CONFIG_EFI_CAPSULE_FIRMWARE_RAW is not set
+CONFIG_TOOLS_MKEFICAPSULE=n
 CONFIG_OF_BOARD_SETUP=y
 CONFIG_FDT_SIMPLEFB=y
 CONFIG_USE_PREBOOT=y
-CONFIG_PREBOOT="pci enum; usb start;"
+CONFIG_PREBOOT="pci enum; nvme scan; usb start"
 CONFIG_SYS_PBSIZE=1049
 # CONFIG_DISPLAY_CPUINFO is not set
 # CONFIG_DISPLAY_BOARDINFO is not set
+# board_early_init_r() enumerates the PCIe host bridge in front of the RP1
+# south bridge, which has to happen before initr_env() reads the environment
+# out of the i2c EEPROM behind it (see rpi5_pci_enum_rp1() in rpi.c). Only
+# that one bridge is brought up; PREBOOT's "pci enum" still does the rest.
+CONFIG_BOARD_EARLY_INIT_R=y
 CONFIG_MISC_INIT_R=y
+# hush shell: PREBOOT and env scripts use if/then and && syntax
+CONFIG_HUSH_PARSER=y
 CONFIG_SYS_PROMPT="U-Boot> "
 CONFIG_CMD_NVEDIT_EFI=y
+CONFIG_CMD_NVEDIT_LOAD=y
 CONFIG_CMD_GPIO=y
 CONFIG_CMD_MMC=y
 CONFIG_CMD_PCI=y
 CONFIG_CMD_USB=y
-CONFIG_CMD_SNTP=y
-CONFIG_WGET_HTTPS=y
+# Previously selected via BOOTSTD_DEFAULTS/BOOT_DEFAULTS; PREBOOT and boot_snp
+# depend on these (load/fatwrite/fatrm on USB, dhcp), so keep them explicit.
+CONFIG_CMD_PART=y
+CONFIG_CMD_DHCP=y
+CONFIG_CMD_PING=y
+CONFIG_CMD_FAT=y
+CONFIG_CMD_FS_GENERIC=y
+# GPT (ESP discovery) and ISO9660 (HTTP-booted ISOs via blkmap) partitions
+CONFIG_EFI_PARTITION=y
+CONFIG_ISO_PARTITION=y
 CONFIG_CMD_EFIDEBUG=y
 CONFIG_CMD_FS_UUID=y
-CONFIG_ENV_FAT_DEVICE_AND_PART="0:1"
+CONFIG_CMD_IMPORTENV=y
+CONFIG_CMD_EXPORTENV=y
+CONFIG_ENV_OVERWRITE=y
+# Three stores share one 24c256 EEPROM at 0x50 on the RP1 i2c1 bus (GPIO2/3),
+# split by offset:
+#   0x0000..0x3fff  UEFI variable blob (CONFIG_EFI_VARIABLE_I2C_STORE, written
+#                   at offset 0; efi_var_i2c.c caps it at CONFIG_ENV_OFFSET so
+#                   it can never grow into the env region)
+#   0x4000..0x5fff  U-Boot environment (CONFIG_ENV_OFFSET, CONFIG_ENV_SIZE)
+#   0x6000..0x67ff  SMBIOS tables      (CONFIG_SMBIOS_I2C_STORE_OFFSET/_SIZE)
+#   0x6800..0x7fff  spare
+# The env is fixed-size, so it can never creep into the SMBIOS region above it.
+# The BMC - or the OS via fw_setenv - can read/rewrite these out-of-band;
+# serial# in the env feeds the SMBIOS system serial (lib/smbios.c reads
+# env_get("serial#")). Env falls back to the built-in default when the chip
+# does not ACK (e.g. the BMC has not populated it yet), so this cannot block
+# boot. CMD_EEPROM is enabled because SYS_I2C_EEPROM_ADDR_LEN is only
+# configurable when it (or ID_EEPROM) is set; it also gives the 'eeprom'
+# command for out-of-band debugging.
+CONFIG_ENV_IS_IN_EEPROM=y
+# Import the EEPROM env on top of the built-in defaults rather than replacing
+# them. The BMC writes this store out-of-band knowing only the variables it
+# manages, so a plain import would drop bootcmd, preboot and the load-address
+# defaults, leaving the board unbootable. Trade-off: a variable in the default
+# env can no longer be deleted (it is re-seeded each boot) - set it empty.
+CONFIG_ENV_EEPROM_KEEP_DEFAULTS=y
+CONFIG_ENV_OFFSET=0x4000
+CONFIG_CMD_EEPROM=y
+CONFIG_SYS_I2C_EEPROM_ADDR=0x50
+CONFIG_SYS_I2C_EEPROM_ADDR_LEN=2
+CONFIG_SYS_EEPROM_SIZE=32768
+CONFIG_SYS_EEPROM_PAGE_WRITE_BITS=6
+CONFIG_ENV_VARS_UBOOT_CONFIG=y
+CONFIG_VERSION_VARIABLE=y
 CONFIG_ENV_VARS_UBOOT_RUNTIME_CONFIG=y
-CONFIG_NET_LWIP=y
+# UEFI variable persistence
+# Non-volatile UEFI variables are persisted as a single serialized blob
+# (ubootefi.var format: magic/length/CRC32) at offset 0 of the I2C EEPROM on
+# the 40-pin header i2c bus (RP1 i2c1, GPIO2/3 - see the rp1_i2c1 node in
+# bcm2712-rpi-5-b-u-boot.dtsi). The "EEPROM" may be a real 24c256 or an I2C
+# slave emulated by the BMC, which can read and rewrite BootOrder/BootNext
+# out-of-band. This replaces the earlier ubootefi.var-on-USB file store
+# (EFI_VAR_FILE_STORE_IFACE="usb"), which itself replaced the OP-TEE
+# StandAloneMM (EFI_MM_COMM_TEE) backend with its opaque RPMB store.
+CONFIG_FAT_WRITE=y
+CONFIG_EFI_VARIABLE_I2C_STORE=y
+# CONFIG_ENV_RELOC_GD_ENV_ADDR=y
+CONFIG_TFTP_TSIZE=y
 CONFIG_DM_DMA=y
 CONFIG_DFU_MMC=y
 CONFIG_SYS_DFU_DATA_BUF_SIZE=0x100000
@@ -47,8 +107,6 @@ CONFIG_BCMGENET=y
 CONFIG_PCI_BRCMSTB=y
 CONFIG_PINCTRL=y
 # CONFIG_PINCTRL_GENERIC is not set
-CONFIG_RESET_BRCMSTB=y
-CONFIG_RESET_BRCMSTB_RESCAL=y
 CONFIG_DM_RNG=y
 CONFIG_RNG_IPROC200=y
 # CONFIG_REQUIRE_SERIAL_CONSOLE is not set
@@ -60,6 +118,7 @@ CONFIG_USB_XHCI_PCI=y
 CONFIG_USB_DWC2=y
 CONFIG_USB_KEYBOARD=y
 CONFIG_USB_HOST_ETHER=y
+CONFIG_USB_ETHER_ECM=y
 CONFIG_USB_ETHER_LAN78XX=y
 CONFIG_USB_ETHER_SMSC95XX=y
 CONFIG_VIDEO=y
@@ -69,5 +128,85 @@ CONFIG_SYS_WHITE_ON_BLACK=y
 CONFIG_VIDEO_BCM2835=y
 CONFIG_CONSOLE_SCROLL_LINES=10
 CONFIG_PHYS_TO_BUS=y
-CONFIG_MBEDTLS_LIB=y
 # CONFIG_HEXDUMP is not set
+CONFIG_BCM2712=y
+# CPU temperature sensor
+CONFIG_DM_THERMAL=y
+CONFIG_BCM2711_THERMAL=y
+CONFIG_CMD_TEMPERATURE=y
+CONFIG_MFD_RP1=y
+CONFIG_RP1_GPIO=y
+# I2C: RP1 i2c1 (Designware) on header GPIO2/3 + UEFI variable store EEPROM
+# (the rp1 pinctrl driver in rp1_gpio.c muxes the pins)
+CONFIG_CMD_I2C=y
+CONFIG_DM_I2C=y
+CONFIG_SYS_I2C_DW=y
+CONFIG_MISC=y
+CONFIG_I2C_EEPROM=y
+CONFIG_RESET_BRCMSTB=y
+CONFIG_RESET_BRCMSTB_RESCAL=y
+CONFIG_CLK=y
+CONFIG_SYS_PCI_64BIT=y
+CONFIG_MACB=y
+# Enable NVME
+CONFIG_NVME_PCI=y
+CONFIG_CMD_NVME=y
+CONFIG_NVME=y
+# USB mass storage support
+CONFIG_USB_STORAGE=y
+CONFIG_USB_DWC3=y
+CONFIG_USB_XHCI_DWC3=y
+CONFIG_BLKMAP=y
+# Boot config - pure UEFI. Standard boot (bootstd) is disabled: bootcmd runs
+# the EFI boot manager directly, so every boot decision flows through the
+# BMC-managed BootNext/BootOrder/Boot#### variables in the I2C var store.
+# Removable-media Boot#### entries (\EFI\BOOT\BOOTAA64.EFI per block device)
+# are auto-generated by efi_disk/efi_setup, covering the old efiloader path.
+# CONFIG_BOOTSTD is not set
+CONFIG_USE_BOOTCOMMAND=y
+CONFIG_BOOTCOMMAND="bootefi bootmgr"
+# EFI boot manager + menu-driven UEFI variable/boot-option maintenance (eficonfig)
+CONFIG_EFI_BOOTMGR=y
+CONFIG_CMD_BOOTEFI_BOOTMGR=y
+CONFIG_CMD_EFICONFIG=y
+# Autoboot shows the bootmenu instead of the "Hit any key" prompt: UEFI Boot####
+# entries plus the eficonfig maintenance menu; a pending BootNext boots straight
+# away. On timeout entry 0 runs - bootmenu_0 in rpi.env, the full EFI bootmgr.
+CONFIG_CMD_BOOTMENU=y
+CONFIG_AUTOBOOT_KEYED=y
+CONFIG_BOOTDELAY=3
+CONFIG_AUTOBOOT_MENU_SHOW=y
+# UEFI HTTP Boot: lets the EFI boot manager load a Boot#### URI option over HTTP
+# (efidebug boot add -u <id> <label> http://host/file.efi). Selects CMD_WGET /
+# CMD_DNS / BLKMAP. Note: with the legacy net stack, wget accepts http:// only
+# (no https/tftp) - TFTP network boot uses the boot_snp env entry / PXE instead.
+CONFIG_EFI_HTTP_BOOT=y
+# Classic UEFI PXE as an EFI boot-manager option: installs a Load File protocol
+# on each NIC so 'efidebug boot add -n' creates a MAC() Boot#### that DHCPs (as
+# a UEFI PXE client, arch 0xB) and TFTPs the server-provided bootfile - orderable
+# in BootOrder/BootNext by the BMC alongside disk and http:// entries.
+CONFIG_EFI_NET_PXE_BOOT=y
+# PXE
+CONFIG_DHCP_PXE_CLIENTARCH=0xb
+CONFIG_BOOTP_VCI_STRING="PXEClient"
+CONFIG_BOOTP_PXE=y
+CONFIG_BOOTP_PXE_DHCP_OPTION=y
+CONFIG_BOOTP_MAY_FAIL=y
+CONFIG_SERVERIP_FROM_PROXYDHCP=y
+CONFIG_BOOTP_SEND_HOSTNAME=y
+CONFIG_BOOTP_DNS2=y
+CONFIG_BOOTP_NTPSERVER=y
+# SMBIOS: tables are populated by the rpi sysinfo driver
+# (board/raspberrypi/rpi/sysinfo.c) from live mailbox/DT data; VERBOSE adds
+# the processor detail fields and the Type 7 cache tables.
+CONFIG_GENERATE_SMBIOS_TABLE=y
+CONFIG_GENERATE_SMBIOS_TABLE_VERBOSE=y
+CONFIG_CMD_SMBIOS=y
+# Mirror the generated SMBIOS tables into the EEPROM at 0x6000 so the BMC can
+# report host inventory (product, version, serial, UUID, CPU, cache) over
+# Redfish/IPMI while the host is off - the type 1 UUID exists nowhere else.
+# ~551 bytes in practice; the write is skipped when the bytes are unchanged.
+CONFIG_SMBIOS_I2C_STORE=y
+CONFIG_SMBIOS_I2C_STORE_OFFSET=0x6000
+CONFIG_SMBIOS_I2C_STORE_SIZE=0x800
+CONFIG_LOCALVERSION_AUTO=n

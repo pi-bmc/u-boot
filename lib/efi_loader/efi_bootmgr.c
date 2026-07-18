@@ -10,7 +10,9 @@
 #include <blk.h>
 #include <blkmap.h>
 #include <charset.h>
+#include <command.h>
 #include <dm.h>
+#include <dm/uclass.h>
 #include <efi.h>
 #include <efi_device_path.h>
 #include <env.h>
@@ -1236,6 +1238,86 @@ out:
 		return EFI_SUCCESS;
 	return ret;
 }
+
+#if IS_ENABLED(CONFIG_EFI_NET_PXE_BOOT)
+/* Reserved Boot#### index for the auto-created default PXE network option. */
+#define EFI_NET_DEFAULT_BOOT_INDEX	0x2000
+
+/**
+ * efi_bootmgr_add_default_net_option() - create a default PXE boot option
+ *
+ * Ensure there is a Boot#### option that PXE-boots the first Ethernet
+ * interface - a MAC() device-path option serviced by efi_net.c's Load File
+ * protocol - and that it is present in BootOrder, so classic network boot
+ * works out of the box without an explicit 'efidebug boot add -n'.
+ *
+ * The option is stored at a fixed reserved index and is only created when it
+ * does not already exist, so the BMC or user can freely reorder, replace or
+ * remove it afterwards (it is re-created on the next boot only if absent). It
+ * is appended to BootOrder, so any disk options added by the media auto-scan
+ * take precedence and PXE acts as a fallback; on a fresh system with no disk
+ * option it is the only entry and boots directly.
+ *
+ * Return:	status code
+ */
+efi_status_t efi_bootmgr_add_default_net_option(void)
+{
+	u16 varname[] = u"Boot####";
+	struct efi_device_path *dp = NULL;
+	struct efi_load_option lo = {};
+	struct udevice *dev;
+	void *existing;
+	u8 *data = NULL;
+	efi_uintn_t size;
+	efi_status_t ret;
+
+	efi_create_indexed_name(varname, sizeof(varname), "Boot",
+				EFI_NET_DEFAULT_BOOT_INDEX);
+
+	/* Already created once - respect any later BMC/user changes. */
+	existing = efi_get_var(varname, &efi_global_variable_guid, &size);
+	if (existing) {
+		free(existing);
+		return EFI_SUCCESS;
+	}
+
+	/* No Ethernet interface - nothing to add. */
+	if (uclass_first_device_err(UCLASS_ETH, &dev))
+		return EFI_SUCCESS;
+
+	dp = efi_dp_from_eth(dev);
+	if (!dp)
+		return EFI_OUT_OF_RESOURCES;
+
+	lo.attributes = LOAD_OPTION_ACTIVE;
+	lo.label = u"PXE Network";
+	lo.file_path = dp;
+	lo.file_path_length = efi_dp_size(dp) + sizeof(EFI_DP_END);
+	lo.optional_data = NULL;
+
+	size = efi_serialize_load_option(&lo, &data);
+	efi_free_pool(dp);
+	if (!size)
+		return EFI_OUT_OF_RESOURCES;
+
+	ret = efi_set_variable_int(varname, &efi_global_variable_guid,
+				   EFI_VARIABLE_NON_VOLATILE |
+				   EFI_VARIABLE_BOOTSERVICE_ACCESS |
+				   EFI_VARIABLE_RUNTIME_ACCESS,
+				   size, data, false);
+	free(data);
+	if (ret != EFI_SUCCESS)
+		return ret;
+
+	ret = efi_bootmgr_append_bootorder(EFI_NET_DEFAULT_BOOT_INDEX);
+	if (ret != EFI_SUCCESS)
+		/* roll back the orphaned Boot#### variable */
+		efi_set_variable_int(varname, &efi_global_variable_guid,
+				     0, 0, NULL, false);
+
+	return ret;
+}
+#endif /* CONFIG_EFI_NET_PXE_BOOT */
 
 /**
  * load_fdt_from_load_option - load device-tree from load option

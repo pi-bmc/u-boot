@@ -50,10 +50,12 @@ extern bool usb_started; /* flag for the started/stopped USB status */
 #define USB_TIMEOUT_MS(pipe) (usb_pipebulk(pipe) ? 5000 : 1000)
 
 /*
- * The xhcd hcd driver prepares only a limited number interfaces / endpoints.
- * Define this limit so that drivers do not exceed it.
+ * The xHCI driver programs endpoint contexts for up to this many interfaces
+ * per device.  Must be at least USB_MAXINTERFACES to support composite
+ * gadgets (e.g. mass-storage + HID + RNDIS) where the storage interface is
+ * not at index 0.
  */
-#define USB_MAX_ACTIVE_INTERFACES	2
+#define USB_MAX_ACTIVE_INTERFACES	USB_MAXINTERFACES
 
 /* device request (setup) */
 struct devrequest {

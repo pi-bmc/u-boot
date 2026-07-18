@@ -106,6 +106,25 @@ config ENV_IS_IN_EEPROM
 	  EEPROM which holds the environment, is reached over
 	  a pca9547 i2c mux with address 0x70, channel 3.
 
+config ENV_EEPROM_KEEP_DEFAULTS
+	bool "Keep built-in defaults absent from the EEPROM environment"
+	depends on ENV_IS_IN_EEPROM
+	help
+	  Import the stored environment on top of the built-in default
+	  environment instead of replacing it, so variables the EEPROM does
+	  not carry keep their default values.
+
+	  An environment written by saveenv always holds every variable, so
+	  the normal import loses nothing. Enable this when the EEPROM may
+	  also be written out-of-band - e.g. by a BMC that only knows the few
+	  variables it manages - where importing a partial store would
+	  otherwise drop bootcmd, preboot and the load-address defaults and
+	  leave the board unbootable.
+
+	  Note the trade-off: a variable that exists in the default
+	  environment can no longer be deleted, since it is re-seeded on every
+	  boot. Set it to an empty value instead.
+
 config ENV_IS_IN_FAT
 	bool "Environment is in a FAT filesystem"
 	depends on !CHAIN_OF_TRUST

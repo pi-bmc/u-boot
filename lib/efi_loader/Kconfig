@@ -143,6 +143,19 @@ config EFI_VARIABLE_SF_STORE
 	  used with care on such systems, and is not recommended for platforms
 	  where UEFI variables are updated frequently.
 
+config EFI_VARIABLE_I2C_STORE
+	bool "Store non-volatile UEFI variables in an I2C EEPROM"
+	depends on DM_I2C && I2C_EEPROM
+	help
+	  Select this option if you want non-volatile UEFI variables to be
+	  stored in an I2C EEPROM (or an EEPROM-compatible I2C slave, such
+	  as one emulated by a BMC). The serialized variable blob - the
+	  same format as the ubootefi.var file, including magic, length and
+	  CRC32 - is written at offset 0 of the first UCLASS_I2C_EEPROM
+	  device. Because the format is self-describing, the store can be
+	  read and modified out-of-band, e.g. by a BMC or by the OS through
+	  an EEPROM driver.
+
 config EFI_MM_COMM_TEE
 	bool "UEFI variables storage service via the trusted world"
 	depends on OPTEE
@@ -565,7 +578,7 @@ config EFI_ECPT
 
 config EFI_EBBR_2_1_CONFORMANCE
 	bool "Add the EBBRv2.1 conformance entry to the ECPT table"
-	depends on BOOTMETH_EFI_BOOTMGR
+	depends on EFI_BOOTMGR
 	depends on EFI_ECPT
 	depends on EFI_LOADER_HII
 	depends on EFI_RISCV_BOOT_PROTOCOL || !RISCV
@@ -619,6 +632,20 @@ config EFI_HTTP_BOOT
 	help
 	  Enabling this option adds EFI HTTP Boot support. It allows to
 	  directly boot from network.
+
+config EFI_NET_PXE_BOOT
+	bool "EFI boot manager PXE (network) boot options"
+	depends on EFI_BOOTMGR && NETDEVICES && CMD_DHCP && BOOTP_PXE
+	default y
+	help
+	  Install an EFI_LOAD_FILE_PROTOCOL on each network interface so the
+	  UEFI boot manager can boot a Boot#### option whose device path is
+	  that interface's MAC() path: it runs DHCP as a UEFI PXE client
+	  (client architecture from DHCP_PXE_CLIENTARCH) and TFTPs the
+	  server-provided bootfile. Create such options with the
+	  'efidebug boot add -n' subcommand. This makes classic PXE boot
+	  orderable from the EFI boot manager (BootOrder / BootNext) alongside
+	  disk and HTTP entries.
 endmenu
 
 config BOOTEFI_HELLO_COMPILE
